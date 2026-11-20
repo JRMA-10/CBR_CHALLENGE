@@ -115,19 +115,17 @@ def main():
             indices = (0, 1) if lado_borda == "esquerda" else (2, 3)
             es.motor_esq.reset_angle(0)
             while abs(es.motor_esq.angle()) < 120:   # ~ limite de correção
-                ainda_ve = any(es.identificar_cor(i, es.sensores[i].rgb()) == cor_borda
-                               for i in indices)
-                if not ainda_ve and abs(es.motor_esq.angle()) > 30:
-                    break
-                es.motor_esq.run(sinal * 120)
-                es.motor_dir.run(-sinal * 120)
+                ainda_ve = any(es.identificar_cor(i, es.sensores[i].rgb()) == cor_borda for i in indices)
+                if not ainda_ve and abs(es.motor_esq.angle()) > 30: break
+                es.motor_esq.run(sinal * 150)
+                es.motor_dir.run(-sinal * 150)
                 wait(10)
             es.parar()
 
             es.estado_atual = es.ESTADO_AVANCO_VERMELHO
 
         elif es.estado_atual == es.ESTADO_VERMELHO_DETECTADO:
-            es.andar_tras(300)
+            es.andar_tras(700)
             wait(100)
             es.girar_90_esquerda()
 
@@ -145,8 +143,7 @@ def main():
                 break
 
         elif es.estado_atual == es.ESTADO_LEITURA_CONTEINERS:
-            cores_fim = es.leitura_conteiners(vel=400, correcao_max=25, passo=15, suavizacao=0.7,
-                                              tempo_limite_ms=9200, parar_em="vermelho")
+            cores_fim = es.leitura_conteiners(vel=400, correcao_max=25, passo=15, suavizacao=0.7, tempo_limite_ms=9200, parar_em="vermelho")
 
             sensor_verm = sensor_extremo(cores_fim, "vermelho")
             if sensor_verm != -1:
@@ -164,6 +161,5 @@ def main():
         wait(15)
 
     es.parar()
-
 
 main()

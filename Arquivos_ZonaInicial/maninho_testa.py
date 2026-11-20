@@ -5,11 +5,13 @@ from pybricks.parameters import Port, Stop
 from pybricks.tools import wait, StopWatch
 import json
 
-
 ev3 = EV3Brick()
 
-motor_esq = Motor(Port.D)
-motor_dir = Motor(Port.C)
+# ==============================================================================
+# CONFIGURAÇÃO DE HARDWARE (EV3 - 2 MOTORES E 4 SENSORES)
+# ==============================================================================
+motor_esq = Motor(Port.C)
+motor_dir = Motor(Port.D)
 
 s1 = ColorSensor(Port.S1)
 s2 = ColorSensor(Port.S2)
@@ -17,20 +19,35 @@ s3 = ColorSensor(Port.S3)
 s4 = ColorSensor(Port.S4)
 sensores = [s1, s2, s3, s4]
 
+# ==============================================================================
+# CARREGAMENTO DO JSON DE CALIBRAÇÃO DE CORES
+# ==============================================================================
 ARQUIVO_CALIBRACAO = "cores_baixo_calibradas.json"
 _referencias = None
 PESO_BRILHO = 0.5
+
 
 def _caracteristicas(rgb):
     r, g, b = rgb
     total = r + g + b
     if total < 1:
         return (0.0, 0.0, 0.0, 0.0)
-    return (r * 100.0 / total, g * 100.0 / total, b * 100.0 / total, float(total))
+    return (
+        r * 100.0 / total,
+        g * 100.0 / total,
+        b * 100.0 / total,
+        float(total),
+    )
+
 
 def _distancia(a, b):
-    return ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2
-            + PESO_BRILHO * (a[3] - b[3]) ** 2)
+    return (
+        (a[0] - b[0]) ** 2
+        + (a[1] - b[1]) ** 2
+        + (a[2] - b[2]) ** 2
+        + PESO_BRILHO * (a[3] - b[3]) ** 2
+    )
+
 
 def carregar_calibracao():
     global _referencias
@@ -47,7 +64,9 @@ def carregar_calibracao():
     ]
     return True
 
+
 carregar_calibracao()
+
 
 def identificar_cor(indice_sensor, rgb):
     if _referencias is None and not carregar_calibracao():
@@ -63,6 +82,7 @@ def identificar_cor(indice_sensor, rgb):
     print(melhor)
     return melhor
 
+
 VEL = 500
 VEL_GIRO = 200
 
@@ -74,14 +94,17 @@ ESTADO_LEITURA_CONTEINERS = 5
 
 estado_atual = ESTADO_BUSCA_VERDE
 
+
 def parar():
     motor_esq.hold()
     motor_dir.hold()
     wait(40)
 
+
 def andar_frente(vel=VEL):
     motor_esq.run(vel)
     motor_dir.run(vel)
+
 
 def andar_tras(vel=VEL):
     relogio = StopWatch()
@@ -90,19 +113,22 @@ def andar_tras(vel=VEL):
         motor_dir.run(vel * -1)
     parar()
 
+
 def girar_90_esquerda():
     parar()
     wait(50)
     motor_esq.run_angle(-VEL_GIRO, 210, wait=False)
     motor_dir.run_angle(VEL_GIRO, 210, wait=True)
     parar()
-    
+
+
 def girar_90_direita():
     parar()
     wait(50)
     motor_esq.run_angle(VEL_GIRO, 210, wait=False)
     motor_dir.run_angle(-VEL_GIRO, 210, wait=True)
     parar()
+
 
 def alinhar_extremos(cor_alvo, sensor_informante, vel_giro=VEL_GIRO, tempo_limite_ms=4000):
     if sensor_informante not in (0, 3):
@@ -127,7 +153,7 @@ def _recuar_suave(graus, vel=100):
 
 
 def _passada_alinhamento(cor_alvo, vel=100, tempo_limite_ms=4000,
-confirmacoes=2, rampa_ms=200):
+                         confirmacoes=2, rampa_ms=200):
     relogio = StopWatch()
     esq_ok = dir_ok = False
     cont_esq = cont_dir = 0
@@ -144,9 +170,9 @@ confirmacoes=2, rampa_ms=200):
                 cont_esq = 0
             if cont_esq >= confirmacoes:
                 esq_ok = True
-                motor_dir.hold()
+                motor_esq.hold()
             else:
-                motor_dir.run(v)
+                motor_esq.run(v)
 
         if not dir_ok:
             if identificar_cor(3, s4.rgb()) == cor_alvo:
@@ -155,9 +181,9 @@ confirmacoes=2, rampa_ms=200):
                 cont_dir = 0
             if cont_dir >= confirmacoes:
                 dir_ok = True
-                motor_esq.hold()
+                motor_dir.hold()
             else:
-                motor_esq.run(v)
+                motor_dir.run(v)
 
         wait(5)
 
@@ -165,30 +191,68 @@ confirmacoes=2, rampa_ms=200):
     motor_dir.hold()
     wait(50)
 
-def leitura_conteiners(vel=400, correcao_max=200, passo=20, suavizacao=0.8, tempo_limite_ms=5000, parar_em=None):
+
+def leitura_conteiners(
+    vel=400,
+    kp=120.0,
+    ki=0.5,
+    kd=25.0,
+    correcao_max=200,
+    suavizacao=0.8,
+    tempo_limite_ms=5000,
+    parar_em=None,
+):
     relogio = StopWatch()
-    alvo = 0.0      
-    correcao = 0.0  
+    dt_relogio = StopWatch()
+
+    correcao = 0.0
+    integral = 0.0
+    erro_anterior = 0.0
     cores = []
 
     while relogio.time() < tempo_limite_ms:
         cores = [identificar_cor(i, sensores[i].rgb()) for i in range(4)]
-        c2 = cores[1]
-        c3 = cores[2]
 
         if parar_em is not None and parar_em in cores:
             break
 
-        if c2 == "verde" and c3 == "amarelo":
-            alvo *= 0.5
-        elif c2 == "verde" and c3 == "verde":
-            alvo = min(alvo + passo, correcao_max)
-        elif c2 == "amarelo" and c3 == "amarelo":
-            alvo = max(alvo - passo, -correcao_max)
-        elif c2 == "amarelo" and c3 == "verde":
-            pass
+        c2 = cores[1]
+        c3 = cores[2]
 
-        correcao = suavizacao * correcao + (1 - suavizacao) * alvo
+        # Calcula o erro no limiar amarelo/verde (0 = alinhado na divisa)
+        if c2 == "verde" and c3 == "amarelo":
+            erro = 0.0
+        elif c2 == "verde" and c3 == "verde":
+            erro = -0.5
+        elif c2 == "amarelo" and c3 == "amarelo":
+            erro = 0.5
+        elif c2 == "amarelo" and c3 == "verde":
+            erro = 1.0
+        else:
+            erro = 0.0
+
+        dt_ms = max(dt_relogio.time(), 1)
+        dt_relogio.reset()
+        dt = dt_ms / 1000.0
+
+        # Termo Proporcional
+        p = kp * erro
+
+        # Termo Integral com anti-windup
+        integral += erro * dt
+        integral = max(-50.0, min(50.0, integral))
+        i_termo = ki * integral
+
+        # Termo Derivativo
+        derivada = (erro - erro_anterior) / dt
+        d_termo = kd * derivada
+        erro_anterior = erro
+
+        # Saída bruta do PID limitada por correcao_max
+        alvo = max(-correcao_max, min(correcao_max, p + i_termo + d_termo))
+
+        # Filtro de suavização na correção aplicada aos motores
+        correcao = suavizacao * correcao + (1.0 - suavizacao) * alvo
 
         motor_esq.run(vel + correcao)
         motor_dir.run(vel - correcao)
@@ -220,53 +284,56 @@ while True:
     if estado_atual == ESTADO_BUSCA_VERDE:
         # PRIORIDADE MÁXIMA: Verifica primeiro se encontrou as bordas (Azul/Amarelo)
         if viu_azul or viu_amarelo:
-            parar() # Trava os motores instantaneamente ao detectar a borda
+            parar()  # Trava os motores instantaneamente ao detectar a borda
             ev3.speaker.beep(400, 400)
             wait(500)
-            
+
             cor_alvo = "azul" if viu_azul else "amarelo"
-            
+
             # Descobre qual dos sensores extremos viu a cor para passar como parâmetro
             sensor_inf = -1
             if c0 == cor_alvo:
                 sensor_inf = 0
             elif c3 == cor_alvo:
                 sensor_inf = 3
-            
+
             if sensor_inf != -1:
                 alinhar_extremos(cor_alvo, sensor_inf, vel_giro=VEL_GIRO, tempo_limite_ms=4000)
-                
+
             andar_tras()
-            
+
             if viu_azul:
                 girar_90_esquerda()
             elif viu_amarelo:
                 girar_90_direita()
-                
+
             wait(500)
             estado_atual = ESTADO_AVANCO_VERMELHO
             print("Transicao: Movendo em direcao à linha vermelha.")
-            
+
         # SECUNDÁRIA: Se não está na borda e está vendo verde, segue
         elif viu_verde:
             andar_frente(VEL)
-            
+
         # Caso padrão: não vê borda, avança
-        elif viu_vermelho: 
+        elif viu_vermelho:
             alinhar_extremos("vermelho", 0 if c0 == "vermelho" else 3, vel_giro=VEL_GIRO, tempo_limite_ms=4000)
             relogio = StopWatch()
-            while relogio.time() < 300: andar_tras(VEL)
+            while relogio.time() < 300:
+                andar_tras(VEL)
             parar()
             girar_90_esquerda()
             parar()
             andar_frente(VEL)
-            if viu_azul: 
+            if viu_azul:
                 alinhar_extremos("azul", 0 if c0 == "azul" else 3, vel_giro=VEL_GIRO, tempo_limite_ms=4000)
-                while relogio.time() < 300: andar_tras(VEL)
+                while relogio.time() < 300:
+                    andar_tras(VEL)
                 girar_90_esquerda()
             elif viu_amarelo:
                 alinhar_extremos("amarelo", 0 if c0 == "amarelo" else 3, vel_giro=VEL_GIRO, tempo_limite_ms=4000)
-                while relogio.time() < 370: andar_frente(VEL)
+                while relogio.time() < 370:
+                    andar_frente(VEL)
                 estado_atual = ESTADO_LEITURA_CONTEINERS
         else:
             andar_frente(VEL)
@@ -274,19 +341,19 @@ while True:
     elif estado_atual == ESTADO_AVANCO_VERMELHO:
         # Avança sem "wait()" bloqueando o processo de leitura
         andar_frente(VEL)
-        
+
         if viu_vermelho:
             parar()
-            
+
             # Alinha no vermelho antes de encerrar
             sensor_inf = 0 if c0 == "vermelho" else (3 if c3 == "vermelho" else -1)
             if sensor_inf != -1:
                 alinhar_extremos("vermelho", sensor_inf, vel_giro=VEL_GIRO, tempo_limite_ms=4000)
-                
+
             ev3.speaker.beep(1200, 400)
             print("Linha vermelha encontrada! Fim da Etapa 1.")
             estado_atual = ESTADO_VERMELHO_DETECTADO
-            
+
         elif viu_azul or viu_amarelo:
             # Guarda AGORA qual lado viu a borda (na próxima volta do loop a
             # leitura já mudou, porque o robô continuou andando)
@@ -319,7 +386,7 @@ while True:
         parar()
 
         estado_atual = ESTADO_AVANCO_VERMELHO
-            
+
     elif estado_atual == ESTADO_VERMELHO_DETECTADO:
         relogio = StopWatch()
         while relogio.time() < 300:
@@ -358,17 +425,28 @@ while True:
         # Sai do estado: sem isso o loop repetia ré + giro para sempre
         parar()
         ev3.speaker.beep(800, 300)
-        
+
     elif estado_atual == ESTADO_LEITURA_CONTEINERS:
-        leitura_conteiners(vel=400, correcao_max=25, passo=15, suavizacao=0.7, tempo_limite_ms=9200, parar_em="vermelho")
+        leitura_conteiners(
+            vel=400,
+            kp=120.0,
+            ki=0.5,
+            kd=25.0,
+            correcao_max=25,
+            suavizacao=0.7,
+            tempo_limite_ms=9200,
+            parar_em="vermelho",
+        )
         alinhar_extremos("vermelho", sensor_inf, vel_giro=VEL_GIRO, tempo_limite_ms=4000)
-        
+
         relogio = StopWatch()
-        while relogio.time() < 300: andar_tras()
-        
+        while relogio.time() < 300:
+            andar_tras()
+
         girar_90_esquerda()
-        if not viu_azul: andar_frente(VEL)
+        if not viu_azul:
+            andar_frente(VEL)
         alinhar_extremos("azul", sensor_inf, vel_giro=VEL_GIRO, tempo_limite_ms=4000)
-        
+
         break
     wait(15)

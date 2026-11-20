@@ -11,8 +11,8 @@ class Estrategia:
         self.ev3 = EV3Brick()
         
         #Motores: 
-        self.motor_esq = Motor(Port.D)
-        self.motor_dir = Motor(Port.C)
+        self.motor_esq = Motor(Port.C)
+        self.motor_dir = Motor(Port.D)
         
         #Sensores: 
         self.s1 = ColorSensor(Port.S1)
@@ -28,8 +28,8 @@ class Estrategia:
         self.carregar_calibracao()
         
         # Configuração: 
-        self.VEL = 500
-        self.VEL_GIRO = 200
+        self.VEL = 1000
+        self.VEL_GIRO = 350
 
         # Estados: 
         self.ESTADO_BUSCA_VERDE = 1
@@ -96,7 +96,7 @@ class Estrategia:
         self.motor_esq.run(vel)
         self.motor_dir.run(vel)
 
-    def andar_tras(self, tempo_ms=600, vel=None):
+    def andar_tras(self, tempo_ms=700, vel=None):
         if vel is None:
             vel = self.VEL
         self.motor_esq.run(-vel)
@@ -163,9 +163,9 @@ class Estrategia:
                     cont_esq = 0
                 if cont_esq >= confirmacoes:
                     esq_ok = True
-                    self.motor_dir.hold()
+                    self.motor_esq.hold()
                 else:
-                    self.motor_dir.run(v)
+                    self.motor_esq.run(v)
 
             if not dir_ok:
                 if self.identificar_cor(3, self.s4.rgb()) == cor_alvo:
@@ -174,9 +174,9 @@ class Estrategia:
                     cont_dir = 0
                 if cont_dir >= confirmacoes:
                     dir_ok = True
-                    self.motor_esq.hold()
+                    self.motor_dir.hold()
                 else:
-                    self.motor_esq.run(v)
+                    self.motor_dir.run(v)
 
             wait(5)
 
@@ -184,7 +184,7 @@ class Estrategia:
         self.motor_dir.hold()
         wait(50)
 
-    def leitura_conteiners(self, vel=400, correcao_max=200, passo=20, suavizacao=0.8, tempo_limite_ms=5000, parar_em=None):
+    def leitura_conteiners(self, vel=400, correcao_max=120, passo=20, suavizacao=0.8, tempo_limite_ms=5000, parar_em=None):
         relogio = StopWatch()
         alvo = 0.0
         correcao = 0.0
