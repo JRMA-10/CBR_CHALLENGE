@@ -37,7 +37,7 @@ class SensorHiTechnic:
     def rgb(self):
         return self.leitura_completa()[1]
 CORES = ["vazio", "preto", "amarelo", "verde", "azul", "vermelho", "marrom"]
-AMOSTRAS = 50              # leituras por cor na calibração
+AMOSTRAS = 300             # leituras por cor na calibração (~3 s, 10 ms cada)
 ARQUIVO = "cores_conteiner.json"
 
 # ------------------------------------------------------------------------------
@@ -51,6 +51,8 @@ PESO_BRILHO = 0.5
 PESO_W = 0.5
 PENALIDADE_NUM = 100.0
 DISTANCIA_MINIMA_SEGURA = 60.0   # abaixo disso, duas cores calibradas estão parecidas demais
+# Intervalo min/max: folga somada para cada lado (em unidades do sensor, 0-255)
+MARGEM_INTERVALO = 4
 
 def _caracteristicas(rgb):
     r, g, b = rgb
@@ -78,7 +80,8 @@ def carregar_calibracao():
         # Mesmo formato do calibrar_cores_baixo.py: uma lista com um
         # dicionário por sensor (aqui só o índice 0 = S1 do hub 2)
         _referencias = [
-            {cor: (_caracteristicas(info["rgb"]), info["w"], info["num"])
+            {cor: (_caracteristicas(info["rgb"]), info["w"], info["num"],
+                   _intervalo(info))
              for cor, info in CALIBRACAO[i].items()}
             for i in range(len(CALIBRACAO))
         ]
@@ -87,8 +90,28 @@ def carregar_calibracao():
         _referencias = None
         return False
 
+def _intervalo(info):
+    """(min[r,g,b,w], max[r,g,b,w]) da calibração, ou None (arquivo antigo)."""
+    if "rgb_min" not in info:
+        return None
+    m = MARGEM_INTERVALO
+    lo = [v - m for v in info["rgb_min"]] + [info["w_min"] - m]
+    hi = [v + m for v in info["rgb_max"]] + [info["w_max"] + m]
+    return lo, hi
+
+def _fora_do_intervalo(valores, intervalo):
+    """0 se a leitura está dentro do intervalo; senão, o quanto passou (soma)."""
+    lo, hi = intervalo
+    fora = 0
+    for v, a, b in zip(valores, lo, hi):
+        if v < a:
+            fora += a - v
+        elif v > b:
+            fora += v - b
+    return fora
+
 def _distancia_total(leitura, w, num, ref):
-    car_ref, w_ref, num_ref = ref
+    car_ref, w_ref, num_ref = ref[0], ref[1], ref[2]
     d = _distancia(leitura, car_ref) + PESO_W * (w - w_ref) ** 2
     if num_ref >= 0 and num != num_ref:
         d += PENALIDADE_NUM
@@ -99,9 +122,26 @@ def identificar_leitura(num, rgb, w, indice_sensor=0):
     if _referencias is None and not carregar_calibracao():
         return None
     leitura = _caracteristicas(rgb)
+    refs = _referencias[indice_sensor]
+    valores = (rgb[0], rgb[1], rgb[2], w)
+
+    # 1) Cores cujo intervalo min/max contém a leitura
+    dentro = [c for c, ref in refs.items()
+              if ref[3] is not None and _fora_do_intervalo(valores, ref[3]) == 0]
+    if len(dentro) == 1:
+        return dentro[0]
+
+    # 2) Caiu em mais de um intervalo: desempata pela distância à média.
+    #    Caiu em nenhum: fica a cor de intervalo mais próximo
+    #    (ou, sem intervalos no arquivo, a de média mais próxima).
+    candidatos = dentro if dentro else list(refs.keys())
     melhor, menor = None, None
-    for cor, ref in _referencias[indice_sensor].items():
-        d = _distancia_total(leitura, w, num, ref)
+    for cor in candidatos:
+        ref = refs[cor]
+        if not dentro and ref[3] is not None:
+            d = _fora_do_intervalo(valores, ref[3])
+        else:
+            d = _distancia_total(leitura, w, num, ref)
         if menor is None or d < menor:
             menor, melhor = d, cor
     return melhor
@@ -118,6 +158,21 @@ def cores_parecidas(calibracao_sensor):
             d = sum((va[k] - vb[k]) ** 2 for k in range(4))
             if d < DISTANCIA_MINIMA_SEGURA:
                 pares.append((nomes[i], nomes[j], d))
+    return pares
+
+def intervalos_sobrepostos(calibracao_sensor):
+    """Pares de cores cujos intervalos min/max se cruzam em R, G, B e W
+    (uma leitura poderia cair nas duas). Devolve [(cor1, cor2), ...]."""
+    nomes = list(calibracao_sensor.keys())
+    ints = {c: _intervalo(calibracao_sensor[c]) for c in nomes}
+    pares = []
+    for i in range(len(nomes)):
+        for j in range(i + 1, len(nomes)):
+            a, b = ints[nomes[i]], ints[nomes[j]]
+            if a is None or b is None:
+                continue
+            if all(a[0][k] <= b[1][k] and b[0][k] <= a[1][k] for k in range(4)):
+                pares.append((nomes[i], nomes[j]))
     return pares
 
 def identificar_conteiner(sensor, indice_sensor=0):
@@ -153,15 +208,24 @@ def tela(ev3, linhas):
     print(" | ".join(linhas))
 
 def ler_media(sensor):
-    """Lê AMOSTRAS vezes: média do RGB e do W, e o número HiTechnic mais comum."""
+    """Lê AMOSTRAS vezes: média, MÍNIMO e MÁXIMO do RGB e do W,
+    e o número HiTechnic mais comum."""
     for _ in range(5):          # descarta as primeiras leituras
         sensor.leitura_completa()
         wait(10)
     soma = [0, 0, 0]
     soma_w = 0
+    rgb_min = [255, 255, 255]
+    rgb_max = [0, 0, 0]
+    w_min, w_max = 255, 0
     contagem_num = {}
     for _ in range(AMOSTRAS):
         num, (r, g, b), w = sensor.leitura_completa()
+        for k, v in enumerate((r, g, b)):
+            rgb_min[k] = min(rgb_min[k], v)
+            rgb_max[k] = max(rgb_max[k], v)
+        w_min = min(w_min, w)
+        w_max = max(w_max, w)
         soma[0] += r
         soma[1] += g
         soma[2] += b
@@ -171,11 +235,16 @@ def ler_media(sensor):
     return {
         "rgb": [int(round(v / AMOSTRAS)) for v in soma],
         "w": int(round(soma_w / AMOSTRAS)),
+        "rgb_min": rgb_min,
+        "rgb_max": rgb_max,
+        "w_min": w_min,
+        "w_max": w_max,
         "num": max(contagem_num, key=lambda c: contagem_num[c]),
     }
 
 def salvar(calibracao):
-    # calibracao = [{cor: {"rgb": [r, g, b], "w": w, "num": n}}, ...]
+    # calibracao = [{cor: {"rgb": [r,g,b], "w": w, "num": n,
+    #                      "rgb_min": [...], "rgb_max": [...], "w_min": .., "w_max": ..}}, ...]
     with open(ARQUIVO, "w") as f:
         json.dump({"cores": calibracao}, f)
 
@@ -269,9 +338,11 @@ def main():
         info = ler_media(sensor)
         calibracao[0][cor] = info
         r, g, b = info["rgb"]
+        lo, hi = info["rgb_min"], info["rgb_max"]
         tela(ev3, [rotulo, cor.upper(), "RGB %d %d %d" % (r, g, b),
-                   "W %d  num %d" % (info["w"], info["num"]), "",
-                   "MEIO = continuar"])
+                   "min %d %d %d" % tuple(lo), "max %d %d %d" % tuple(hi),
+                   "W %d-%d num %d" % (info["w_min"], info["w_max"], info["num"]),
+                   "", "MEIO = continuar"])
         ev3.speaker.beep(frequency=1200, duration=100)
         esperar_botao_meio(ev3)
 
@@ -283,6 +354,17 @@ def main():
         linhas = ["ATENCAO!", "Cores parecidas:"]
         for c1, c2, d in pares[:5]:
             linhas.append("%s/%s %d" % (c1[:6], c2[:6], d))
+        linhas += ["", "MEIO = continuar"]
+        tela(ev3, linhas)
+        ev3.speaker.beep(frequency=400, duration=400)
+        esperar_botao_meio(ev3)
+
+    # Confere se algum intervalo min/max ficou cruzado com outro
+    cruzados = intervalos_sobrepostos(calibracao[0])
+    if cruzados:
+        linhas = ["ATENCAO!", "Intervalos cruzam:"]
+        for c1, c2 in cruzados[:5]:
+            linhas.append("%s / %s" % (c1[:7], c2[:7]))
         linhas += ["", "MEIO = continuar"]
         tela(ev3, linhas)
         ev3.speaker.beep(frequency=400, duration=400)

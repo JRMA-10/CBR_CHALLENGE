@@ -7,8 +7,8 @@ import json
 
 ev3 = EV3Brick()
 
-motor_esq = Motor(Port.D)
-motor_dir = Motor(Port.C)
+motor_dir = Motor(Port.D)
+motor_esq = Motor(Port.C)
 
 s1 = ColorSensor(Port.S1)
 s2 = ColorSensor(Port.S2)
@@ -59,7 +59,7 @@ def carregar_calibracao():
     return True
 
 
-carregar_calibracao()
+#carregar_calibracao()
 
 
 def identificar_cor(indice_sensor, rgb):
@@ -143,7 +143,7 @@ def leitura_conteiners(
 
     parar()
 
-
+'''
 ev3.screen.clear()
 ev3.screen.print("TESTE PID")
 
@@ -154,4 +154,9 @@ leitura_conteiners(
     kd=25.0,
     correcao_max=80.0,
     suavizacao=0.75,
-)
+)'''
+
+relogio = StopWatch()
+while relogio.time() < 3000: 
+    motor_dir.run(550)
+    motor_esq.run(1000)

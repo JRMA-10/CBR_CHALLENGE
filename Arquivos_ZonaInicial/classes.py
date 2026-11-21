@@ -4,6 +4,7 @@ from pybricks.ev3devices import Motor, ColorSensor
 from pybricks.parameters import Port, Stop
 from pybricks.tools import wait, StopWatch
 import json
+from pybricks.messaging import BluetoothMailboxClient, TextMailbox
 
 class Estrategia: 
     def __init__(self):
@@ -30,6 +31,7 @@ class Estrategia:
         # Configuração: 
         self.VEL = 1000
         self.VEL_GIRO = 350
+        self.diferenca_dir = 0.550
 
         # Estados: 
         self.ESTADO_BUSCA_VERDE = 1
@@ -37,8 +39,34 @@ class Estrategia:
         self.ESTADO_ALINHAMENTO = 3
         self.ESTADO_VERMELHO_DETECTADO = 4
         self.ESTADO_LEITURA_CONTEINERS = 5
+        self.ESTADO_ENTREGA_CUBOS = 6
 
         self.estado_atual = self.ESTADO_BUSCA_VERDE
+        
+        # Lista de conteiners (posição 1..5, "vazio" quando não tem):
+        self.conteiners = []
+        self.MAX_CONTEINERS = 5
+        # Leitura por tempo: tempo até o 1º conteiner e entre um e outro (ms).
+        # AJUSTE medindo no tapete com a velocidade usada no seguidor.
+        self.TEMPO_ATE_PRIMEIRO_MS = 800
+        self.TEMPO_POR_CONTEINER_MS = 1600
+        # Qual sensor do hub 2 olha os conteiners: 0=esq, 1=centro, 2=dir
+        self.SENSOR_CONTEINER = 1
+
+        # Comunicação com o hub 2 (sensor HiTechnic dos conteiners).
+        # Hub 1 manda "LER;<n>", hub 2 devolve "COR;<n>;<cor>" (hub2.py).
+        self.NOME_HUB2 = "ev3dev"       # <-- nome Bluetooth do hub 2
+        self.MAILBOX_CONTEINER = "conteiner"
+        self.cliente_bt = None
+        self.caixa_conteiner = None
+        self._num_pedido = 0
+        
+        # Cor do bloco atual: 
+        self.cor_bloco = ''
+        
+        # Posicionamento: 
+        self.linha = 0
+        self.coluna = 0
 
     # FUNÇÕES DE CALIBRAÇÃO
     @staticmethod
@@ -94,13 +122,13 @@ class Estrategia:
         if vel is None:
             vel = self.VEL
         self.motor_esq.run(vel)
-        self.motor_dir.run(vel)
+        self.motor_dir.run(vel * self.diferenca_dir)
 
     def andar_tras(self, tempo_ms=700, vel=None):
         if vel is None:
             vel = self.VEL
         self.motor_esq.run(-vel)
-        self.motor_dir.run(-vel)
+        self.motor_dir.run(-vel * self.diferenca_dir)
         wait(tempo_ms)
         self.parar()
 
@@ -113,14 +141,14 @@ class Estrategia:
         self.parar()
         wait(50)
         self.motor_esq.run_angle(-self.VEL_GIRO, 210, wait=False)
-        self.motor_dir.run_angle(self.VEL_GIRO, 210, wait=True)
+        self.motor_dir.run_angle(self.VEL_GIRO * self.diferenca_dir, 210, wait=True)
         self.parar()
     
     def girar_90_direita(self):
         self.parar()
         wait(50)
         self.motor_esq.run_angle(self.VEL_GIRO, 210, wait=False)
-        self.motor_dir.run_angle(-self.VEL_GIRO, 210, wait=True)
+        self.motor_dir.run_angle(-self.VEL_GIRO * self.diferenca_dir, 210, wait=True)
         self.parar()
         
     # ALINHAMENTO: 
@@ -143,7 +171,7 @@ class Estrategia:
     def _recuar_suave(self, graus, vel=100):
         """Ré curta e lenta, sem tranco."""
         self.motor_esq.run_angle(-vel, graus, then=Stop.HOLD, wait=False)
-        self.motor_dir.run_angle(-vel, graus, then=Stop.HOLD, wait=True)
+        self.motor_dir.run_angle(-vel * self.diferenca_dir, graus, then=Stop.HOLD, wait=True)
         wait(50)
 
     def _passada_alinhamento(self, cor_alvo, vel=100, tempo_limite_ms=4000,
@@ -184,64 +212,138 @@ class Estrategia:
         self.motor_dir.hold()
         wait(50)
 
-    def leitura_conteiners(
-    self, 
-    vel=400,
-    kp=100.0,
-    ki=0.5,
-    kd=15.0,
-    correcao_max=70.0,
-    suavizacao=0.75,
-    ):
-        dt_relogio = StopWatch()
+    # COMUNICAÇÃO COM O HUB 2
+    def conectar_hub2(self):
+        """Conecta no hub 2 (rode o hub2.py nele antes). Devolve True se conectou."""
+        self.ev3.screen.print("Conectando hub 2")
+        try:
+            self.cliente_bt = BluetoothMailboxClient()
+            self.caixa_conteiner = TextMailbox(self.MAILBOX_CONTEINER, self.cliente_bt)
+            self.cliente_bt.connect(self.NOME_HUB2)
+        except OSError:
+            self.caixa_conteiner = None
+            self.ev3.screen.print("Hub 2 FALHOU")
+            self.ev3.speaker.beep(300, 500)
+            return False
+        self.ev3.screen.print("Hub 2 OK!")
+        self.ev3.speaker.beep(1000, 100)
+        return True
 
-        correcao = 0.0
-        integral = 0.0
-        erro_anterior = 0.0
+    def _cor_do_conteiner(self, resposta_hub2):
+        """Pega, da resposta "esq,centro,dir" do hub 2, a cor do sensor dos conteiners."""
+        partes = resposta_hub2.split(",")
+        if len(partes) == 1:
+            return partes[0]
+        if self.SENSOR_CONTEINER < len(partes):
+            return partes[self.SENSOR_CONTEINER]
+        return "erro"
+
+    def leitura_conteiners(self, vel=250, kp=60):
+        """Segue o LIMIAR verde|amarelo (S3 no verde, S4 no amarelo) até ver
+        vermelho, lendo os conteiners pelo hub 2 POR TEMPO.
+
+        Seguidor (proporcional simples):
+          S3 verde   + S4 amarelo -> no limiar: reto
+          S3 verde   + S4 verde   -> saiu p/ esquerda: vira à direita
+          S3 amarelo + S4 amarelo -> entrou no amarelo: vira à esquerda
+          qualquer outra leitura  -> mantém a última correção
+
+        Leitura por tempo: depois de TEMPO_ATE_PRIMEIRO_MS, cada janela de
+        TEMPO_POR_CONTEINER_MS é uma posição (1..5). A cor que mais apareceu
+        na janela é a do conteiner; se nenhuma cor apareceu, fica "vazio".
+        Posições não alcançadas (vermelho antes) também ficam "vazio".
+        """
+        IGNORAR = ("vazio", "erro", "None", "")
+        erro = 0
+        self.conteiners = []
+        votos = {}                   # cor -> quantas leituras na janela atual
+        pedido_pendente = None
+        hora_pedido = 0
+        relogio = StopWatch()
+        cores = []
+
+        def fechar_janela():
+            if votos:
+                cor = max(votos, key=votos.get)
+            else:
+                cor = "vazio"
+            self.conteiners.append(cor)
+            print("Posicao", len(self.conteiners), ":", cor, votos)
+            votos.clear()
 
         while True:
-            c3 = self.identificar_cor(2, self.s3.rgb())  # Sensor 3 (índice 2)
-            c4 = self.identificar_cor(3, self.s4.rgb())  # Sensor 4 (índice 3)
+            cores = self.ler_cores()
+            c3, c4 = cores[2], cores[3]
 
-            if (
-                self.identificar_cor(0, self.s1.rgb()) == "vermelho"
-                or self.identificar_cor(1, self.s2.rgb()) == "vermelho"
-                or c3 == "vermelho"
-                or c4 == "vermelho"
-            ):
+            if "vermelho" in cores:
                 break
 
-            # Erro no limiar entre Sensor 3 (esperado no verde) e Sensor 4 (esperado no amarelo)
+            # ---------- Seguidor do limiar ----------
             if c3 == "verde" and c4 == "amarelo":
-                erro = 0.0
+                erro = 0
             elif c3 == "verde" and c4 == "verde":
-                erro = -0.5
+                erro = 1
             elif c3 == "amarelo" and c4 == "amarelo":
-                erro = 0.5
-            elif c3 == "amarelo" and c4 == "verde":
-                erro = 1.0
-            else:
-                erro = 0.0
+                erro = -1
+            # senão: mantém o erro anterior
 
-            dt_ms = max(dt_relogio.time(), 1)
-            dt_relogio.reset()
-            dt = dt_ms / 1000.0
-
-            p = kp * erro
-
-            integral += erro * dt
-            integral = max(-50.0, min(50.0, integral))
-            i_termo = ki * integral
-
-            derivada = (erro - erro_anterior) / dt
-            d_termo = kd * derivada
-            erro_anterior = erro
-
-            alvo = max(-correcao_max, min(correcao_max, p + i_termo + d_termo))
-            correcao = suavizacao * correcao + (1.0 - suavizacao) * alvo
-
+            correcao = kp * erro   # > 0 = vira à direita
             self.motor_esq.run(vel + correcao)
             self.motor_dir.run(vel - correcao)
-            wait(10)
+
+            # ---------- Janela de tempo da posição atual ----------
+            t = relogio.time() - self.TEMPO_ATE_PRIMEIRO_MS
+            if t >= 0 and len(self.conteiners) < self.MAX_CONTEINERS:
+                posicao = int(t // self.TEMPO_POR_CONTEINER_MS)   # 0..4
+                while len(self.conteiners) < posicao and len(self.conteiners) < self.MAX_CONTEINERS:
+                    fechar_janela()
+
+            # ---------- Hub 2: pedir / receber a cor ----------
+            if self.caixa_conteiner is not None:
+                try:
+                    if pedido_pendente is None:
+                        self._num_pedido += 1
+                        pedido_pendente = self._num_pedido
+                        hora_pedido = relogio.time()
+                        self.caixa_conteiner.send("LER;%d" % pedido_pendente)
+                    else:
+                        esperado = "COR;%d;" % pedido_pendente
+                        resposta = self.caixa_conteiner.read()
+                        if resposta and resposta.startswith(esperado):
+                            pedido_pendente = None
+                            cor = self._cor_do_conteiner(resposta[len(esperado):])
+                            # só conta se já estiver dentro de uma janela
+                            if (t >= 0 and len(self.conteiners) < self.MAX_CONTEINERS
+                                    and cor not in IGNORAR):
+                                votos[cor] = votos.get(cor, 0) + 1
+                        elif relogio.time() - hora_pedido > 1000:
+                            pedido_pendente = None
+                except OSError:
+                    pass
+
+            wait(5)
 
         self.parar()
+
+        # Fecha a janela em andamento e completa as posições que faltaram
+        if relogio.time() >= self.TEMPO_ATE_PRIMEIRO_MS and len(self.conteiners) < self.MAX_CONTEINERS:
+            fechar_janela()
+        while len(self.conteiners) < self.MAX_CONTEINERS:
+            self.conteiners.append("vazio")
+
+        print("Conteiners:", self.conteiners)
+        return cores
+
+    def melhor_escolha(self): 
+        cor_bloco = self.cor_bloco
+        posicao = 0
+        linha = self.linha
+        
+        # Posição do conteiner da cor do cubo na lista (0 = primeiro lido)
+        if cor_bloco in self.conteiners:
+            posicao = self.conteiners.index(cor_bloco)
+        
+        decisao = linha - posicao
+        if decisao >= 0: return 'esquerda'
+        elif decisao < 0: return 'direita'
+            

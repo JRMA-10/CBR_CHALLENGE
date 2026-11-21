@@ -1,62 +1,60 @@
 #!/usr/bin/env pybricks-micropython
-# HUB 2: le os 3 sensores HiTechnic Color e informa as cores ao Hub 1.
-#   Porta 1 (S1) = Direita
-#   Porta 2 (S2) = Centro
-#   Porta 3 (S3) = Esquerda
+# HUB 2: le o sensor HiTechnic Color da DIREITA (Porta 1) e informa a cor ao Hub 1.
+#
+# As cores sao decididas com a calibracao do "cores_conteiner.json"
+# (feita pelo cor_conteiner.py). O sensor faz 5 amostras e a cor que
+# mais se repete e a enviada.
 #
 # Protocolo (caixa de texto "conteiner"):
 #   Hub 1 manda:   "LER;<n>"
-#   Hub 2 devolve: "COR;<n>;<esq>,<centro>,<dir>"   (ex.: "COR;3;azul,vazio,verde")
+#   Hub 2 devolve: "COR;<n>;<cor>"   (ex.: "COR;3;azul")
 #
 # Este hub e o SERVIDOR: rode este arquivo primeiro, depois o programa do Hub 1.
 from pybricks.hubs import EV3Brick
 from pybricks.parameters import Port
-from pybricks.iodevices import Ev3devSensor
 from pybricks.messaging import BluetoothMailboxServer, TextMailbox
 from pybricks.tools import wait
-import json
+import cor_conteiner as cc
 
 ev3 = EV3Brick()
 
 MAILBOX_CONTEINER = "conteiner"
-ARQUIVO_CALIBRACAO = "calibracao_cores.json"
+AMOSTRAS_POR_LEITURA = 5
+INTERVALO_AMOSTRA_MS = 15
 
-# (nome mostrado, porta, nome da tabela no calibracao_cores.json)
-# A ordem desta lista e a ordem da mensagem: esquerda, centro, direita.
-SENSORES = [
-    ("esquerda", Port.S3, "Esquerda"),
-    ("centro",   Port.S2, "Meio"),
-    ("direita",  Port.S1, "Direita"),
-]
+PORTA_SENSOR = Port.S1      # sensor da direita
+INDICE_CALIBRACAO = 0       # indice do S1 no cores_conteiner.json
 
+# ---------------- Calibracao ----------------
+ev3.screen.clear()
+if not cc.carregar_calibracao():
+    ev3.screen.print("SEM CALIBRACAO!")
+    ev3.screen.print("Rode o")
+    ev3.screen.print("cor_conteiner.py")
+    ev3.speaker.beep(300, 800)
+    raise SystemExit
 
-def carregar_calibracao():
-    try:
-        with open(ARQUIVO_CALIBRACAO, "r") as f:
-            return json.load(f)
-    except Exception:
-        print("Sem calibracao, usando so os numeros.")
-        return {}
-
-
-calibracao = carregar_calibracao()
-sensores = [(nome, Ev3devSensor(porta), calibracao.get(chave, {})) for nome, porta, chave in SENSORES]
-
-def ler_numero(sensor):
-    leitura = sensor.read("COLOR")
-    return leitura[0] if isinstance(leitura, (tuple, list)) else int(leitura)
+# ---------------- Sensor ----------------
+try:
+    sensor = cc.SensorHiTechnic(PORTA_SENSOR)
+except OSError:
+    ev3.screen.print("Sem sensor S1!")
+    ev3.speaker.beep(300, 800)
+    raise SystemExit
 
 
-def ler_cores():
-    """Devolve [cor_esq, cor_centro, cor_dir]."""
-    cores = []
-    for _, sensor, tabela in sensores:
-        num = ler_numero(sensor)
-        cores.append(tabela.get(str(num), "n" + str(num)))
-    return cores
+def cor_mais_frequente():
+    """5 amostras do sensor; devolve a cor que mais se repetiu."""
+    votos = {}
+    for _ in range(AMOSTRAS_POR_LEITURA):
+        num, rgb, w = sensor.leitura_completa()
+        cor = cc.identificar_leitura(num, rgb, w, INDICE_CALIBRACAO) or "erro"
+        votos[cor] = votos.get(cor, 0) + 1
+        wait(INTERVALO_AMOSTRA_MS)
+    return max(votos, key=lambda c: votos[c])
+
 
 # ---------------- Conexao ----------------
-ev3.screen.clear()
 ev3.screen.print("Hub 2: esperando")
 servidor = BluetoothMailboxServer()
 caixa = TextMailbox(MAILBOX_CONTEINER, servidor)
@@ -66,14 +64,19 @@ ev3.speaker.beep(1000, 100)
 
 # ---------------- Loop ----------------
 while True:
-    caixa.wait()
-    pedido = caixa.read()
-    if not pedido or not pedido.startswith("LER;"): continue
+    try:
+        caixa.wait()
+        pedido = caixa.read()
+    except OSError:
+        ev3.screen.print("Conexao caiu")
+        ev3.speaker.beep(300, 500)
+        break
+    if not pedido or not pedido.startswith("LER;"):
+        continue
     num = pedido[4:]
-    cores = ler_cores()
-    caixa.send("COR;%s;%s" % (num, ",".join(cores)))
+    cor = cor_mais_frequente()
+    caixa.send("COR;%s;%s" % (num, cor))
 
     ev3.screen.clear()
-    ev3.screen.print("E: " + cores[0])
-    ev3.screen.print("C: " + cores[1])
-    ev3.screen.print("D: " + cores[2])
+    ev3.screen.print("Pedido " + num)
+    ev3.screen.print(cor.upper())
