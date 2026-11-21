@@ -184,34 +184,64 @@ class Estrategia:
         self.motor_dir.hold()
         wait(50)
 
-    def leitura_conteiners(self, vel=400, correcao_max=120, passo=20, suavizacao=0.8, tempo_limite_ms=5000, parar_em=None):
-        relogio = StopWatch()
-        alvo = 0.0
+    def leitura_conteiners(
+    self, 
+    vel=400,
+    kp=100.0,
+    ki=0.5,
+    kd=15.0,
+    correcao_max=70.0,
+    suavizacao=0.75,
+    ):
+        dt_relogio = StopWatch()
+
         correcao = 0.0
-        cores = []
+        integral = 0.0
+        erro_anterior = 0.0
 
-        while relogio.time() < tempo_limite_ms:
-            cores = [self.identificar_cor(i, self.sensores[i].rgb()) for i in range(4)]
-            c2 = cores[1]
-            c3 = cores[2]
+        while True:
+            c3 = self.identificar_cor(2, self.s3.rgb())  # Sensor 3 (índice 2)
+            c4 = self.identificar_cor(3, self.s4.rgb())  # Sensor 4 (índice 3)
 
-            if parar_em is not None and parar_em in cores:
+            if (
+                self.identificar_cor(0, self.s1.rgb()) == "vermelho"
+                or self.identificar_cor(1, self.s2.rgb()) == "vermelho"
+                or c3 == "vermelho"
+                or c4 == "vermelho"
+            ):
                 break
 
-            if c2 == "verde" and c3 == "amarelo":
-                alvo *= 0.5
-            elif c2 == "verde" and c3 == "verde":
-                alvo = min(alvo + passo, correcao_max)
-            elif c2 == "amarelo" and c3 == "amarelo":
-                alvo = max(alvo - passo, -correcao_max)
-            elif c2 == "amarelo" and c3 == "verde":
-                pass
+            # Erro no limiar entre Sensor 3 (esperado no verde) e Sensor 4 (esperado no amarelo)
+            if c3 == "verde" and c4 == "amarelo":
+                erro = 0.0
+            elif c3 == "verde" and c4 == "verde":
+                erro = -0.5
+            elif c3 == "amarelo" and c4 == "amarelo":
+                erro = 0.5
+            elif c3 == "amarelo" and c4 == "verde":
+                erro = 1.0
+            else:
+                erro = 0.0
 
-            correcao = suavizacao * correcao + (1 - suavizacao) * alvo
+            dt_ms = max(dt_relogio.time(), 1)
+            dt_relogio.reset()
+            dt = dt_ms / 1000.0
+
+            p = kp * erro
+
+            integral += erro * dt
+            integral = max(-50.0, min(50.0, integral))
+            i_termo = ki * integral
+
+            derivada = (erro - erro_anterior) / dt
+            d_termo = kd * derivada
+            erro_anterior = erro
+
+            alvo = max(-correcao_max, min(correcao_max, p + i_termo + d_termo))
+            correcao = suavizacao * correcao + (1.0 - suavizacao) * alvo
 
             self.motor_esq.run(vel + correcao)
             self.motor_dir.run(vel - correcao)
             wait(10)
 
         self.parar()
-        return cores

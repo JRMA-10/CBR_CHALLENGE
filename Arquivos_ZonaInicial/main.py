@@ -76,9 +76,10 @@ def main():
 
             elif viu_vermelho:
                 es.alinhar_extremos("vermelho", 0 if c0 == "vermelho" else 3, tempo_limite_ms=4000)
-                es.andar_tras(300)
+                es.andar_tras(200)
                 es.girar_90_esquerda()
                 es.andar_frente()
+                es.estado_atual = es.ESTADO_VERMELHO_DETECTADO
 
             else:
                 # Vendo verde ou nada: segue em frente
@@ -105,12 +106,8 @@ def main():
                 es.estado_atual = es.ESTADO_ALINHAMENTO
 
         elif es.estado_atual == es.ESTADO_ALINHAMENTO:
-            for v in (es.VEL // 2, es.VEL // 4):
-                es.andar_frente(v)
-                wait(60)
+            # Só o giro para longe da borda; depois volta a seguir para o vermelho
             es.parar()
-
-            es._recuar_suave(90, vel=150)
             sinal = 1 if lado_borda == "esquerda" else -1   # +1 = vira à direita
             indices = (0, 1) if lado_borda == "esquerda" else (2, 3)
             es.motor_esq.reset_angle(0)
@@ -133,7 +130,7 @@ def main():
 
             if sensor_amarelo != -1:
                 es.alinhar_extremos("amarelo", sensor_amarelo, tempo_limite_ms=4000)
-                es.andar_frente_tempo(370)
+                es.andar_frente_tempo(200)
                 es.girar_90_esquerda()
                 es.estado_atual = es.ESTADO_LEITURA_CONTEINERS
                 es.ev3.speaker.beep(800, 300)
@@ -143,7 +140,14 @@ def main():
                 break
 
         elif es.estado_atual == es.ESTADO_LEITURA_CONTEINERS:
-            cores_fim = es.leitura_conteiners(vel=400, correcao_max=25, passo=15, suavizacao=0.7, tempo_limite_ms=9200, parar_em="vermelho")
+            cores_fim = es.leitura_conteiners(
+                vel=320,
+                kp=120.0,
+                ki=0.5,
+                kd=25.0,
+                correcao_max=80.0,
+                suavizacao=0.75,
+            )
 
             sensor_verm = sensor_extremo(cores_fim, "vermelho")
             if sensor_verm != -1:
