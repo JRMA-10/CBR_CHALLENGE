@@ -2,8 +2,8 @@
 # HUB 2: le o sensor HiTechnic Color da DIREITA (Porta 1) e informa a cor ao Hub 1.
 #
 # As cores sao decididas com a calibracao do "cores_conteiner.json"
-# (feita pelo cor_conteiner.py). O sensor faz 5 amostras e a cor que
-# mais se repete e a enviada.
+# (feita pelo cor_conteiner.py, formato versao 2). A cor e decidida por
+# votacao ponderada pela confianca (cc.ler_conteiner).
 #
 # Protocolo (caixa de texto "conteiner"):
 #   Hub 1 manda:   "LER;<n>"
@@ -19,15 +19,12 @@ import cor_conteiner as cc
 ev3 = EV3Brick()
 
 MAILBOX_CONTEINER = "conteiner"
-AMOSTRAS_POR_LEITURA = 5
-INTERVALO_AMOSTRA_MS = 15
-
 PORTA_SENSOR = Port.S1      # sensor da direita
-INDICE_CALIBRACAO = 0       # indice do S1 no cores_conteiner.json
 
 # ---------------- Calibracao ----------------
 ev3.screen.clear()
-if not cc.carregar_calibracao():
+calibracao = cc.carregar_calibracao()
+if not calibracao.get(cc.NOME_SENSOR):
     ev3.screen.print("SEM CALIBRACAO!")
     ev3.screen.print("Rode o")
     ev3.screen.print("cor_conteiner.py")
@@ -41,17 +38,6 @@ except OSError:
     ev3.screen.print("Sem sensor S1!")
     ev3.speaker.beep(300, 800)
     raise SystemExit
-
-
-def cor_mais_frequente():
-    """5 amostras do sensor; devolve a cor que mais se repetiu."""
-    votos = {}
-    for _ in range(AMOSTRAS_POR_LEITURA):
-        num, rgb, w = sensor.leitura_completa()
-        cor = cc.identificar_leitura(num, rgb, w, INDICE_CALIBRACAO) or "erro"
-        votos[cor] = votos.get(cor, 0) + 1
-        wait(INTERVALO_AMOSTRA_MS)
-    return max(votos, key=lambda c: votos[c])
 
 
 # ---------------- Conexao ----------------
@@ -74,7 +60,7 @@ while True:
     if not pedido or not pedido.startswith("LER;"):
         continue
     num = pedido[4:]
-    cor = cor_mais_frequente()
+    cor = cc.ler_conteiner(sensor, calibracao)
     caixa.send("COR;%s;%s" % (num, cor))
 
     ev3.screen.clear()

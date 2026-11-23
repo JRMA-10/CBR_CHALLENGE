@@ -6,12 +6,12 @@
 #   O robo segue o limiar ate ver vermelho e mostra os conteiners lidos.
 from pybricks.parameters import Button
 from pybricks.tools import wait
-from classes import Estrategia
+from funcoes import Funcoes
 
 VEL = 250   # velocidade base
 KP = 60     # forca da correcao
 
-es = Estrategia()
+es = Funcoes()
 
 es.ev3.screen.clear()
 es.conectar_hub2()   # se falhar, o PID roda mesmo assim (sem ler conteiners)
